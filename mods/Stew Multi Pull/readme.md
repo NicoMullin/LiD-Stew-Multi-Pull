@@ -66,3 +66,11 @@ it reads right in every language the game ships.
 The patches are made by `tools/build_stew_multi_pull.py` (in the
 [LiD Stew Multi Pull](https://github.com/NicoMullin/LiD-Stew-Multi-Pull)
 repository) from the stock `BrgGame.upk`; 1.89 and 1.91 have the same scripts.
+
+## Switched with this mod
+
+From LiD DB Editor 0.12.8, saving with this mod ticked switches
+`lid-stewpull.dll` on, and saving with it unticked switches it off: renamed to
+`.dll.off`, which the Plugin Loader skips. Nothing is deleted, and ticking the
+mod again brings it back. Close the game first. Death Metals names it too (its
+Death Metal stew needs it), so it stays on while either mod is ticked.
