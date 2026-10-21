@@ -2,7 +2,7 @@
   "id": "Stew Multi Pull",
   "name": "Stew Multi-Pull",
   "description": "Adds \"Purchase x{{count}}\" to the Mushroom Club's stew menu: {{count}} decal pulls in a row. It costs {{count}} pulls' worth, and you need all of it to start. The stew animation plays once instead of {{count}} times, and all {{count}} decals show together in a grid at the end. With its plugin, lid-stewpull.dll, the whole run is one request - paid, drawn and saved once - so it is about as quick as one pull.",
-  "version": "0.5.1",
+  "version": "0.5.2",
   "author": "KSFA",
   "category": "Quality of life",
   "tags": [
@@ -12,8 +12,7 @@
     "game-files"
   ],
   "game_version": [
-    "5.0.4.1.0 - 1.89",
-    "5.0.4.1.0 - 1.89 (Steam 5.0.4.2.0)"
+    "5.0.5.0.0 - 1.92"
   ],
   "requires": [],
   "conflicts_with": [],
