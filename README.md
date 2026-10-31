@@ -7,8 +7,12 @@ together at the end, paid for, drawn and saved in one request.
 - **Stew Multi Pull** (`mods/Stew Multi Pull`): the mod for
   [LiD DB Editor](https://github.com/NicoMullin/LiD-DB-Editor) (the LET IT DIE
   DB Mod Manager). It adds the Purchase xN entry, the price of the whole run,
-  and the results grid, as a patch to `BrgGame.upk`. See its
-  [readme](mods/Stew%20Multi%20Pull/readme.md).
+  and the results grid, as a patch to `BrgGame.upk`. It can also make the
+  regular stew a fresh random pick every pull (with or without repeats in a
+  run), from the stew's own decals or a list of your own with your own
+  weights, and give every stew a pity: pick the decal you want in its Check
+  Lineup, and after a number of pulls without it, the next pull gives it.
+  See its [readme](mods/Stew%20Multi%20Pull/readme.md).
 - **lid-stewpull.dll** (`dll/`): a plugin for the
   [LiD Plugin Loader](https://github.com/NicoMullin/LiD-Plugin-Loader) that
   changes the offline game's stew server code, so a whole run is one request.
@@ -16,7 +20,7 @@ together at the end, paid for, drawn and saved in one request.
 ## What the plugin does
 
 The offline game answers the stew menu with a server built into the game. The
-plugin makes three changes to it, **in memory only** (the exe on disk is never
+plugin makes four changes to it, **in memory only** (the exe on disk is never
 touched):
 
 1. **A whole run in one request.** The mod marks each pull's request with how
@@ -29,10 +33,20 @@ touched):
 2. **Random stews.** Every normal stew draws from one queue kept in your save.
    A stew whose odds list is named `SKLGACH_RANDOM_*` gets a fresh pick from
    its own list instead, by its odds, every pull - and never the same decal
-   twice in one run. The Death Metals mod's Death Metal stew and the Events and
-   Seasons festival stew are stews like that.
+   twice in one run, unless the list's name ends in `_REPEATS`. The Death
+   Metals mod's Death Metal stew, the Events and Seasons festival stew, and
+   the regular stew with this mod's "a fresh random pick" setting are stews
+   like that.
 3. **Every stew offered.** The offline shop offers only the first normal stew
    in `masters.db`; with the plugin it offers them all, so those stews show up.
+4. **Pity.** The mod's Check Lineup sends the decal you picked with your next
+   pull. Each pull of that stew without it counts, and when the count reaches
+   the number the mod set (`master_const_int` `LID_PITY_NORMAL`, `_DM` or
+   `_FEST`), the next pull gives that decal instead. The picks and counts are
+   kept in your save, in the user record's `olid`, a text only the online game
+   used; a save that already has something there is left alone. The shop's
+   reply and every pull's reply also carry how far each stew's pity is, so the
+   mod's menu can show it.
 
 These used to be part of `lid-deathmetals.dll` (up to 0.5.x). They live here
 so the multi pull does not need the Death Metals mod. With Death Metals 0.6.0

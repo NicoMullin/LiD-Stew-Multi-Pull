@@ -28,7 +28,10 @@ const wchar_t *fake_text_of(void *text);
 void fake_empty(void *decals, int zero);
 void *draw_all_standin(void *decals, const void *gacha_row, int count);
 char fake_check_c(struct rows *ids);
-unsigned char g_reply[0x700], g_user[16];
+unsigned char g_reply[0x700], g_user[0x100];
+char const_int_c(const wchar_t *name, int *value);
+void fake_const_int(void), fake_read_user(void);
+const wchar_t box_limit_name[] = L"PRESENT_BOX_LIMIT";
 void *g_handler_vtable[16], *g_handler[1] = {g_handler_vtable};
 const wchar_t empty_text[] = L"";
 struct fstring g_out;
@@ -211,7 +214,104 @@ __asm__(
     "    popq %rsi\n"
     "    popq %rbx\n"
     "    ret\n"
+    /* the server's master_const_int reader: its first bytes as the game has
+     * them, then the stand-in below */
+    ".globl fake_const_int\n"
+    "fake_const_int:\n"
+    "    .byte 0x40,0x53,0x48,0x83,0xEC,0x60,0x48,0xC7,0x44,0x24,0x20,0xFE,0xFF,0xFF,0xFF\n"
+    "    .byte 0x48,0x8B,0xDA,0x4C,0x8B,0xC1\n"
+    "    addq $0x60, %rsp\n"
+    "    popq %rbx\n"
+    "    jmp const_int_c\n"
+    /* where the Rewards Box's limit is read: only read, never run */
+    "    .byte 0x48,0x8D,0x54,0x24,0x30,0x48,0x8D,0x0D\n"
+    "    .long box_limit_name - (. + 4)\n"
+    "    .byte 0x33,0xDB,0xE8\n"
+    "    .long fake_const_int - (. + 4)\n"
+    "    .byte 0x84,0xC0,0x75,0x2B\n"
+    "    int3\n"
+    /* the save's user record read: only read, never run */
+    ".globl fake_read_user\n"
+    "fake_read_user:\n"
+    "    .byte 0x48,0x83,0xEC,0x28,0x45,0x33,0xC0,0xE8,0,0,0,0,0xB0,0x01,0x48,0x83,0xC4,0x28,0xC3\n"
+    "    .byte 0x48,0x85,0xC0,0x74,0x14,0x48,0x8B,0xD0,0x48,0x8D,0x0D\n"
+    "    .long g_user + 8 - (. + 4)\n"
+    "    .byte 0xE8\n"
+    "    .long fake_read_user - (. + 4)\n"
+    "    int3\n"
+    /* the shop's reply: rcx = the reply, its box stew list at +0x5f8 */
+    ".globl fake_shop_reply\n"
+    "fake_shop_reply:\n"
+    "    pushq %r13\n"
+    "    pushq %rbx\n"
+    "    subq $0x48, %rsp\n"
+    "    movq %rcx, %r13\n"
+    "    xorl %ebx, %ebx\n"
+    "    .byte 0x49,0x8D,0x8D,0xF8,0x05,0x00,0x00,0x33,0xD2,0xE8\n"
+    "    .long fake_fill_boxes - (. + 4)\n"
+    "    .byte 0x48,0x89,0x5C,0x24,0x38\n"
+    "    addq $0x48, %rsp\n"
+    "    popq %rbx\n"
+    "    popq %r13\n"
+    "    ret\n"
+    /* a pull's reply: rcx = the reply, its box stew list at +0x5d8, then the
+     * handler's method +0x30 sends it */
+    ".globl fake_pull_reply\n"
+    "fake_pull_reply:\n"
+    "    pushq %r13\n"
+    "    pushq %r14\n"
+    "    subq $0x28, %rsp\n"
+    "    movq %rcx, %r13\n"
+    "    leaq g_handler(%rip), %r14\n"
+    "    .byte 0x49,0x8D,0x8D,0xD8,0x05,0x00,0x00,0xB2,0x01,0xE8\n"
+    "    .long fake_fill_boxes - (. + 4)\n"
+    "    .byte 0x49,0x8B,0x06,0x49,0x8B,0xD5,0x49,0x8B,0xCE,0xFF,0x50,0x30\n"
+    "    addq $0x28, %rsp\n"
+    "    popq %r14\n"
+    "    popq %r13\n"
+    "    ret\n"
 );
+
+/* the game's fill of a reply's box stew list: one box stew of its own */
+static int g_fill_flag = -1, g_sent;
+uint64_t fake_fill_boxes(struct rows *boxes, char flag)
+{
+    unsigned char *entry = calloc(1, BOX_SIZE);
+    g_fill_flag = flag;
+    ((struct fstring *)entry)->data = _wcsdup(L"SKLGACH_BOX");
+    ((struct fstring *)entry)->num = ((struct fstring *)entry)->max = 12;
+    boxes->data = entry;
+    boxes->num = boxes->max = 1;
+    return 1;
+}
+void fake_shop_reply(void *reply), fake_pull_reply(void *reply);
+static void fake_send(void *self, void *reply) { (void)self; (void)reply; g_sent++; }
+unsigned char g_box_reply[0x700];
+
+/* entry `i` of a reply's box stew list: is it `id`, with these decals? */
+static int box_is(int off, int i, const wchar_t *id, const wchar_t *decal, int count, int limit)
+{
+    struct rows *boxes = (struct rows *)(g_box_reply + off), *decals;
+    struct fstring *name, *first;
+    unsigned char *entry;
+
+    if (i >= boxes->num)
+        return 0;
+    entry = boxes->data + (size_t)i * BOX_SIZE;
+    name = (struct fstring *)entry;
+    decals = (struct rows *)(entry + BOX_DECALS);
+    if (!name->data || wcscmp(name->data, id) != 0 || name->num != (int)wcslen(id) + 1)
+        return 0;
+    if (decals->num != 2)
+        return 0;
+    first = (struct fstring *)decals->data;
+    if (decal[0] ? !first->data || wcscmp(first->data, decal) != 0 : first->data != NULL || first->num != 0)
+        return 0;
+    return *(int *)(decals->data + BOX_DECAL_REST) == count &&
+           ((struct fstring *)(decals->data + BOX_DECAL_SIZE))->num == 0 &&
+           *(int *)(decals->data + BOX_DECAL_SIZE + BOX_DECAL_REST) == limit;
+}
+static int boxes_in(int off) { return ((struct rows *)(g_box_reply + off))->num; }
 
 /* ------------------------------------------------- the game stand-ins */
 
@@ -331,6 +431,8 @@ void *game_normal_draw(struct fstring *out, const wchar_t *odds_id)
         g_queue.num = 1;
     }
     *out = g_queue.ids[--g_queue.num];
+    out->data = _wcsdup(out->data);       /* the game's draw copies the id */
+    out->max = out->num;
     return out;
 }
 
@@ -344,6 +446,63 @@ static void set_queue(int n, const wchar_t *const *ids)
     }
     g_queue.ids = g_queue_store;
     g_queue.num = n;
+}
+
+/* master_const_int as the server reads it: the pity's pull counts */
+static int g_pity_normal, g_pity_dm, g_pity_fest;
+char const_int_c(const wchar_t *name, int *value)
+{
+    int *v = !wcscmp(name, L"LID_PITY_NORMAL") ? &g_pity_normal : !wcscmp(name, L"LID_PITY_DM") ? &g_pity_dm
+           : !wcscmp(name, L"LID_PITY_FEST") ? &g_pity_fest : NULL;
+    if (!v || *v < 0)
+        return 0;           /* no such row */
+    *value = *v;
+    return 1;
+}
+
+/* the save's user record: its olid, where the pity keeps its picks and counts */
+static struct fstring *olid(void) { return (struct fstring *)(g_user + 8 + USER_OLID); }
+static int olid_is(const wchar_t *want)
+{
+    struct fstring s;
+    memcpy(&s, olid(), sizeof s);
+    if (!want[0])
+        return !s.data || !s.data[0];
+    return s.data && s.num == (int)wcslen(want) + 1 && wcscmp(s.data, want) == 0;
+}
+static void set_olid(const wchar_t *text)
+{
+    struct fstring s = {NULL, 0, 0};
+    if (text[0]) {
+        s.data = _wcsdup(text);
+        s.num = s.max = (int)wcslen(text) + 1;
+    }
+    memcpy(olid(), &s, sizeof s);
+}
+
+/* a pick sent along with a pull: the request's list of stews with LID_PITY= */
+static void send_pick(const wchar_t *pick)
+{
+    static wchar_t hint[128];
+    struct fstring items[2] = {{(wchar_t *)L"SKLGACH_NORMAL_OFFLINE", 23, 23}, {hint, 0, 0}};
+    struct rows ids = {(unsigned char *)items, 2, 2};
+    swprintf(hint, 128, L"LID_PITY=%ls", pick);
+    items[1].num = items[1].max = (int)wcslen(hint) + 1;
+    lid_sp_pull_ids(&ids);
+}
+
+/* one single pull of a stew that takes from the save's queue */
+static const wchar_t *queue_pull(const wchar_t *stew, const wchar_t *next)
+{
+    static wchar_t got[64];
+    const wchar_t *one[1];
+    one[0] = next;
+    set_queue(1, one);
+    check_pull(0);
+    pull(stew);
+    wcscpy(got, g_out.data ? g_out.data : L"?");
+    free(g_out.data);
+    return got;
 }
 
 /* ----------------------------------------------------------- the tests */
@@ -507,6 +666,29 @@ int main(void)
         g_run_n = 0;
     }
 
+    puts("-- multi pulls of a list named ..._REPEATS: repeats allowed");
+    {
+        int run, repeated = 0, odd_c = 0;
+        wchar_t got[3][64];
+        for (run = 0; run < 2000; run++) {
+            for (i = 0; i < 3; i++) {
+                check_pull(3 - i);
+                pull(L"SKLGACH_RANDOM_NORMAL_REPEATS");
+                wcscpy(got[i], g_out.data ? g_out.data : L"?");
+                free(g_out.data);
+                odd_c += !wcscmp(got[i], L"SKL_C");
+            }
+            if (!wcscmp(got[0], got[1]) || !wcscmp(got[0], got[2]) || !wcscmp(got[1], got[2]))
+                repeated++;
+        }
+        expect("a 3-pull run of 3 decals: the same decal twice in many runs", repeated > 2000 / 2, 1);
+        expect("the odds still count (SKL_C, odds 5 of 7, about 71%)",
+               odd_c > 6000 * 66 / 100 && odd_c < 6000 * 76 / 100, 1);
+        expect("  by its own name", wcscmp(g_query_id, L"SKLGACH_RANDOM_NORMAL_REPEATS") == 0, 1);
+        g_run_left = 0;
+        g_run_n = 0;
+    }
+
     puts("-- a whole run in one request");
     g_handler_vtable[0x68 / 8] = (void *)fake_error;
     {
@@ -581,6 +763,123 @@ int main(void)
     g_run_left = 0;
     g_run_n = 0;
 
+    puts("-- pity");
+    expect("the settings reader is found", g_pc.const_int == (void *)fake_const_int, 1);
+    expect("the save's user record is found", g_pc.user_record == g_user + 8, 1);
+    g_pity_normal = 3; g_pity_dm = 2; g_pity_fest = -1;
+    set_olid(L"");
+    {
+        int i2, given = 0;
+        expect("no pick yet: the queue's decal",
+               !wcscmp(queue_pull(L"SKLGACH_NORMAL_OFFLINE", L"SKL_Q"), L"SKL_Q"), 1);
+        expect("  nothing kept in the save", olid_is(L""), 1);
+        send_pick(L"SKLGACH_NORMAL_OFFLINE|SKL_WANT");
+        expect("a pick is kept in the save, at 0", olid_is(L"LIDPITY;N=SKL_WANT,0"), 1);
+        expect("pull 1 of 3: the queue's decal",
+               !wcscmp(queue_pull(L"SKLGACH_NORMAL_OFFLINE", L"SKL_Q"), L"SKL_Q"), 1);
+        expect("  counted", olid_is(L"LIDPITY;N=SKL_WANT,1"), 1);
+        queue_pull(L"SKLGACH_NORMAL_OFFLINE", L"SKL_Q");
+        expect("pull 3 of 3: the picked decal instead",
+               !wcscmp(queue_pull(L"SKLGACH_NORMAL_OFFLINE", L"SKL_Q"), L"SKL_WANT"), 1);
+        expect("  the count starts again", olid_is(L"LIDPITY;N=SKL_WANT,0"), 1);
+        queue_pull(L"SKLGACH_NORMAL_OFFLINE", L"SKL_Q");
+        expect("the picked decal drawn as usual: the count starts again",
+               !wcscmp(queue_pull(L"LID_STEW_NORMAL", L"SKL_WANT"), L"SKL_WANT") &&
+               olid_is(L"LIDPITY;N=SKL_WANT,0"), 1);
+        g_list = RUN_LIST;
+        g_list_n = sizeof RUN_LIST / sizeof RUN_LIST[0];
+        expect("every form of the regular stew counts together",
+               (pull_one(0), pull(L"SKLGACH_RANDOM_NORMAL_REPEATS"), free(g_out.data),
+                olid_is(L"LIDPITY;N=SKL_WANT,1")), 1);
+        set_olid(L"LIDPITY;N=SKL_WANT,0");
+
+        send_pick(L"SKLGACH_RANDOM_FEST|SKL_A");
+        expect("a stew with no pull count keeps its pick", olid_is(L"LIDPITY;N=SKL_WANT,0;FEST=SKL_A,0"), 1);
+        for (i2 = 0; i2 < 5; i2++)
+            check_pull(0), pull(L"SKLGACH_RANDOM_FEST"), free(g_out.data);
+        expect("  but counts nothing", olid_is(L"LIDPITY;N=SKL_WANT,0;FEST=SKL_A,0"), 1);
+
+        /* a decal the list never gives (odds 0), every 2nd pull of a whole run */
+        send_pick(L"SKLGACH_RANDOM_DM|SKL_ZERO");
+        g_money = 1000;
+        request(L"SKLGACH_RANDOM_DM", 5, 5);
+        for (i2 = 0; i2 < g_decal_n; i2++)
+            given += !wcscmp(g_decals[i2], L"SKL_ZERO");
+        expect("a run of 5 with a count of 2: the pick 2nd and 4th",
+               g_decal_n == 5 && given == 2 && !wcscmp(g_decals[1], L"SKL_ZERO") &&
+               !wcscmp(g_decals[3], L"SKL_ZERO"), 1);
+        expect("  each stew's count its own", olid_is(L"LIDPITY;N=SKL_WANT,0;DM=SKL_ZERO,1;FEST=SKL_A,0"), 1);
+        g_run_left = 0;
+        g_run_n = 0;
+
+        send_pick(L"SKLGACH_RANDOM_DM|SKL_C");
+        expect("a new pick keeps the count", olid_is(L"LIDPITY;N=SKL_WANT,0;DM=SKL_C,1;FEST=SKL_A,0"), 1);
+        send_pick(L"SKLGACH_RANDOM_DM|SKL_C");
+        expect("  the same pick again changes nothing", olid_is(L"LIDPITY;N=SKL_WANT,0;DM=SKL_C,1;FEST=SKL_A,0"), 1);
+        send_pick(L"SKLGACH_BOX|SKL_A");
+        send_pick(L"SKLGACH_RANDOM_DM|SKL_X;N=SKL_Y");
+        send_pick(L"SKLGACH_RANDOM_DM");
+        expect("picks for other stews, or with ; or no decal, are ignored",
+               olid_is(L"LIDPITY;N=SKL_WANT,0;DM=SKL_C,1;FEST=SKL_A,0"), 1);
+
+        set_olid(L"someone else's");
+        send_pick(L"SKLGACH_NORMAL_OFFLINE|SKL_WANT");
+        given = 0;
+        for (i2 = 0; i2 < 4; i2++)
+            given += !wcscmp(queue_pull(L"SKLGACH_NORMAL_OFFLINE", L"SKL_Q"), L"SKL_WANT");
+        expect("a save whose olid holds something else: no pity", given, 0);
+        expect("  and its olid left alone", olid_is(L"someone else's"), 1);
+
+        set_olid(L"LIDPITY;N=SKL_WANT,2");
+        g_pity_normal = 0;
+        expect("a pull count of 0: no pity",
+               !wcscmp(queue_pull(L"SKLGACH_NORMAL_OFFLINE", L"SKL_Q"), L"SKL_Q") &&
+               olid_is(L"LIDPITY;N=SKL_WANT,2"), 1);
+        g_pity_normal = 3;
+        expect("a count kept in the save carries on",
+               !wcscmp(queue_pull(L"SKLGACH_NORMAL_OFFLINE", L"SKL_Q"), L"SKL_WANT"), 1);
+        set_olid(L"");
+        g_pity_normal = g_pity_dm = g_pity_fest = -1;
+    }
+
+    puts("-- pity shown in the stew menu");
+    expect("both replies' box stew lists are found",
+           g_pc.fill_boxes == (void *)fake_fill_boxes && g_pc.boxes_shop && g_pc.boxes_pull, 1);
+    g_pity_normal = 3; g_pity_dm = 2; g_pity_fest = -1;
+    set_olid(L"LIDPITY;N=SKL_WANT,2");
+    fake_shop_reply(g_box_reply);
+    expect("the shop's reply: the game's box stew, then 5 entries", boxes_in(0x5F8), 6);
+    expect("  the game's own first, filled as asked",
+           g_fill_flag == 0 && !wcscmp(((struct fstring *)((struct rows *)(g_box_reply + 0x5F8))->data)->data,
+                                       L"SKLGACH_BOX"), 1);
+    expect("  every form of the regular stew: SKL_WANT, 2 of 3",
+           box_is(0x5F8, 1, L"LID_PITY_SKLGACH_NORMAL_OFFLINE", L"SKL_WANT", 2, 3) &&
+           box_is(0x5F8, 2, L"LID_PITY_LID_STEW_NORMAL", L"SKL_WANT", 2, 3) &&
+           box_is(0x5F8, 3, L"LID_PITY_SKLGACH_RANDOM_NORMAL", L"SKL_WANT", 2, 3) &&
+           box_is(0x5F8, 4, L"LID_PITY_SKLGACH_RANDOM_NORMAL_REPEATS", L"SKL_WANT", 2, 3), 1);
+    expect("  the Death Metal stew: nothing picked, 0 of 2",
+           box_is(0x5F8, 5, L"LID_PITY_SKLGACH_RANDOM_DM", L"", 0, 2), 1);
+    g_sent = 0;
+    g_handler_vtable[0x30 / 8] = (void *)fake_send;
+    queue_pull(L"SKLGACH_NORMAL_OFFLINE", L"SKL_Q");
+    fake_pull_reply(g_box_reply);
+    expect("a pull's reply: the count after the pull, 0 of 3 after the pick came",
+           boxes_in(0x5D8) == 6 && g_fill_flag == 1 &&
+           box_is(0x5D8, 1, L"LID_PITY_SKLGACH_NORMAL_OFFLINE", L"SKL_WANT", 0, 3), 1);
+    expect("  and the reply still sent", g_sent, 1);
+    g_pity_normal = g_pity_dm = -1;
+    fake_shop_reply(g_box_reply);
+    expect("no stew with pity: only the game's", boxes_in(0x5F8), 1);
+    g_pity_normal = 3;
+    set_olid(L"someone else's");
+    fake_shop_reply(g_box_reply);
+    expect("a save whose olid holds something else: only the game's", boxes_in(0x5F8), 1);
+    set_olid(L"");
+    fake_shop_reply(g_box_reply);
+    expect("a save with no pity yet: an entry each, nothing picked",
+           boxes_in(0x5F8) == 5 && box_is(0x5F8, 1, L"LID_PITY_SKLGACH_NORMAL_OFFLINE", L"", 0, 3), 1);
+    g_pity_normal = g_pity_dm = g_pity_fest = -1;
+
     puts("-- a random stew with nothing to draw");
     g_list = EMPTY_LIST;
     g_list_n = sizeof EMPTY_LIST / sizeof EMPTY_LIST[0];
@@ -599,7 +898,7 @@ int main(void)
     if (f) { fread(log, 1, 512, f); fclose(f); }
     expect("the log names the hook", strstr(log, "draw a fresh decal") != NULL, 1);
     f = fopen("stew-test.log", "rb");
-    if (f) { fseek(f, -2048, SEEK_END); fread(log, 1, sizeof log - 1, f); fclose(f); }
+    if (f) { fseek(f, -8000, SEEK_END); fread(log, 1, sizeof log - 1, f); fclose(f); }
     expect("the log names a pick", strstr(log, "SKLGACH_RANDOM_DM -> SKL_") != NULL, 1);
     expect("the log names the empty stew", strstr(log, "SKLGACH_RANDOM_EMPTY has no decal") != NULL, 1);
     expect("the log names a whole run", strstr(log, "one request for a run of 3 pulls: paid 3 x PRD_SKILL_GACHA_MEDAL") != NULL, 1);
@@ -607,6 +906,8 @@ int main(void)
     f = fopen("stew-test.log", "rb");
     if (f) { fread(log, 1, sizeof log - 1, f); fclose(f); }
     expect("the log names the one-request hook", strstr(log, "paid for and drawn in one request") != NULL, 1);
+    expect("the log says the pity is on", strstr(log, "pity: on") != NULL, 1);
+    expect("the log says the menu is told", strstr(log, "the stew menu is told how far") != NULL, 1);
 
 
     printf(fails ? "\n%d FAILED\n" : "\nall passed\n", fails);

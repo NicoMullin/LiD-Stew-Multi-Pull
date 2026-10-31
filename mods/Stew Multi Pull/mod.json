@@ -1,8 +1,8 @@
 {
   "id": "Stew Multi Pull",
   "name": "Stew Multi-Pull",
-  "description": "Adds \"Purchase x{{count}}\" to the Mushroom Club's stew menu: {{count}} decal pulls in a row. It costs {{count}} pulls' worth, and you need all of it to start. The stew animation plays once instead of {{count}} times, and all {{count}} decals show together in a grid at the end. With its plugin, lid-stewpull.dll, the whole run is one request - paid, drawn and saved once - so it is about as quick as one pull.",
-  "version": "0.5.2",
+  "description": "Adds \"Purchase x{{count}}\" to the Mushroom Club's stew menu: {{count}} decal pulls in a row. It costs {{count}} pulls' worth, and you need all of it to start. The stew animation plays once instead of {{count}} times, and all {{count}} decals show together in a grid at the end. With its plugin, lid-stewpull.dll, the whole run is one request - paid, drawn and saved once - so it is about as quick as one pull. The regular stew can also give a fresh random pick every pull, from the game's decals or your own list with your own weights.",
+  "version": "0.7.0",
   "author": "KSFA",
   "category": "Quality of life",
   "tags": [
@@ -14,6 +14,7 @@
   "game_version": [
     "5.0.5.0.0 - 1.92"
   ],
+  "min_manager_version": "0.13.4",
   "requires": [],
   "conflicts_with": [],
   "plugin": "lid-stewpull.dll",
@@ -34,6 +35,114 @@
         {"value": "25", "label": "25"}
       ],
       "help": "How many decals one \"Purchase\" in the new menu entry pulls. Each costs the normal price, so 25 costs 25 pulls' worth of Kill Coins (or Death Metals), and you need it all before it starts."
+    },
+    {
+      "id": "regular",
+      "label": "The regular stew",
+      "type": "choice",
+      "default": "list",
+      "group": "The regular stew",
+      "options": [
+        {"value": "list", "label": "The list in your save (as the game does it)",
+         "help": "The game rolls a long list of decals ahead of time, keeps it in your save, and every pull takes the next one. A change to the odds only shows once that list has run out (or after the save editor's Mushroom Stew > Clear)."},
+        {"value": "random", "label": "A fresh random pick every pull",
+         "help": "Every pull is rolled there and then from the stew's odds, so a change to them counts from the next pull. Needs lid-stewpull.dll. The list in your save is left as it is, for when you switch back."}
+      ],
+      "help": "How the regular stew (the Kill Coin one) picks its decal."
+    },
+    {
+      "id": "repeats",
+      "label": "A decal can come twice in one Purchase xN",
+      "type": "toggle",
+      "default": false,
+      "group": "The regular stew",
+      "when": {"regular": "random"},
+      "help": "Off: in one multi pull, no decal comes twice until every decal in the stew has come once, as the Death Metal stew does it. On: any decal can come again on any pull, as single pulls can."
+    },
+    {
+      "id": "own_list",
+      "label": "Use my own list of decals and weights",
+      "type": "toggle",
+      "default": false,
+      "group": "The regular stew",
+      "help": "Off: the stew's own decals and odds, including any another mod adds (the Crossover pack's, say). On: the list below - which decals are in, and how often each comes up."
+    },
+    {
+      "id": "stew",
+      "label": "Decals in the regular stew",
+      "type": "decal_weights",
+      "group": "The regular stew",
+      "when": {"own_list": true},
+      "default_label": "The stew's own decals and odds",
+      "default_sql": "SELECT sklid, odds FROM master_skillgacha_odds WHERE id = 'SKLGACH_NORMAL_OFFLINE' AND odds > 0",
+      "help": "Tick the decals the stew can give and set each one's weight: weight 3 comes up three times as often as weight 1. It starts as the stew's own list (the game's odds, which run from 2 to 74). With \"The list in your save\" the new list is used once the list in your save runs out."
+    },
+    {
+      "id": "pity_regular",
+      "label": "Pity in the regular stew",
+      "type": "toggle",
+      "default": true,
+      "group": "Pity",
+      "help": "Pick a decal in the stew's Check Lineup with Triangle. After the number of pulls below without it, the next pull gives it. Getting it any other way starts the count again. Needs lid-stewpull.dll; the picks and counts are kept in your save."
+    },
+    {
+      "id": "pity_regular_pulls",
+      "label": "Pulls, regular stew",
+      "type": "integer",
+      "default": 100,
+      "min": 10,
+      "max": 500,
+      "step": 10,
+      "unit": "pulls",
+      "group": "Pity",
+      "when": {"pity_regular": true},
+      "help": "How many pulls without your picked decal before the next one gives it. Picking a different decal keeps the count."
+    },
+    {
+      "id": "pity_dm",
+      "label": "Pity in the Death Metal stew",
+      "type": "toggle",
+      "default": true,
+      "group": "Pity",
+      "needs_mods": ["Death Metals"],
+      "help": "The same for the Death Metals mod's Death Metal stew, counted on its own."
+    },
+    {
+      "id": "pity_dm_pulls",
+      "label": "Pulls, Death Metal stew",
+      "type": "integer",
+      "default": 100,
+      "min": 10,
+      "max": 500,
+      "step": 10,
+      "unit": "pulls",
+      "group": "Pity",
+      "needs_mods": ["Death Metals"],
+      "when": {"pity_dm": true},
+      "help": "How many Death Metal stew pulls without your picked decal before the next one gives it."
+    },
+    {
+      "id": "pity_fest",
+      "label": "Pity in the Super Stew Festival",
+      "type": "toggle",
+      "default": true,
+      "group": "Pity",
+      "needs_mods": ["Events and Seasons"],
+      "help": "The same for the Events and Seasons mod's Super Stew Festival, counted on its own."
+    },
+    {
+      "id": "pity_fest_pulls",
+      "label": "Pulls, Super Stew Festival",
+      "type": "integer",
+      "default": 100,
+      "min": 10,
+      "max": 500,
+      "step": 10,
+      "unit": "pulls",
+      "group": "Pity",
+      "needs_mods": ["Events and Seasons"],
+      "when": {"pity_fest": true},
+      "help": "How many festival stew pulls without your picked decal before the next one gives it."
     }
   ],
   "patches": [
@@ -41,6 +150,54 @@
       "type": "tfc_installer",
       "source": "tfc/x{{count}}",
       "description": "Purchase x{{count}} in the stew menu, its price, and its decals in one grid (BrgGame.upk)"
+    },
+    {
+      "type": "raw_sql",
+      "id": "random",
+      "when": {"regular": "random", "own_list": false},
+      "description": "The regular stew: a fresh random pick every pull, from its own decals",
+      "sql": "DELETE FROM master_skillgacha_odds WHERE id IN ('SKLGACH_RANDOM_NORMAL', 'SKLGACH_RANDOM_NORMAL_REPEATS', 'LID_STEW_NORMAL'); INSERT INTO master_skillgacha_odds (id, sklid, odds, display_priority) SELECT CASE WHEN {{repeats}} = 1 THEN 'SKLGACH_RANDOM_NORMAL_REPEATS' ELSE 'SKLGACH_RANDOM_NORMAL' END, sklid, odds, display_priority FROM master_skillgacha_odds WHERE id = 'SKLGACH_NORMAL_OFFLINE' AND odds > 0; UPDATE master_skillgacha SET id = CASE WHEN {{repeats}} = 1 THEN 'SKLGACH_RANDOM_NORMAL_REPEATS' ELSE 'SKLGACH_RANDOM_NORMAL' END, odds_id = CASE WHEN {{repeats}} = 1 THEN 'SKLGACH_RANDOM_NORMAL_REPEATS' ELSE 'SKLGACH_RANDOM_NORMAL' END WHERE id IN ('SKLGACH_NORMAL_OFFLINE', 'SKLGACH_RANDOM_NORMAL', 'SKLGACH_RANDOM_NORMAL_REPEATS', 'LID_STEW_NORMAL');"
+    },
+    {
+      "type": "raw_sql",
+      "id": "random-own",
+      "when": {"regular": "random", "own_list": true},
+      "description": "The regular stew: a fresh random pick every pull, from your own list",
+      "sql": "DELETE FROM master_skillgacha_odds WHERE id IN ('SKLGACH_RANDOM_NORMAL', 'SKLGACH_RANDOM_NORMAL_REPEATS', 'LID_STEW_NORMAL'); WITH wanted(sklid, weight) AS ({{stew}}) INSERT INTO master_skillgacha_odds (id, sklid, odds, display_priority) SELECT CASE WHEN {{repeats}} = 1 THEN 'SKLGACH_RANDOM_NORMAL_REPEATS' ELSE 'SKLGACH_RANDOM_NORMAL' END, w.sklid, w.weight, 0 FROM wanted w WHERE w.sklid IS NOT NULL AND w.weight > 0 AND w.sklid IN (SELECT id FROM master_skill); UPDATE master_skillgacha SET id = CASE WHEN {{repeats}} = 1 THEN 'SKLGACH_RANDOM_NORMAL_REPEATS' ELSE 'SKLGACH_RANDOM_NORMAL' END, odds_id = CASE WHEN {{repeats}} = 1 THEN 'SKLGACH_RANDOM_NORMAL_REPEATS' ELSE 'SKLGACH_RANDOM_NORMAL' END WHERE id IN ('SKLGACH_NORMAL_OFFLINE', 'SKLGACH_RANDOM_NORMAL', 'SKLGACH_RANDOM_NORMAL_REPEATS', 'LID_STEW_NORMAL');"
+    },
+    {
+      "type": "raw_sql",
+      "id": "list-own",
+      "when": {"regular": "list", "own_list": true},
+      "description": "The regular stew: the list in your save, refilled from your own list",
+      "sql": "DELETE FROM master_skillgacha_odds WHERE id IN ('SKLGACH_RANDOM_NORMAL', 'SKLGACH_RANDOM_NORMAL_REPEATS', 'LID_STEW_NORMAL'); WITH wanted(sklid, weight) AS ({{stew}}) INSERT INTO master_skillgacha_odds (id, sklid, odds, display_priority) SELECT 'LID_STEW_NORMAL', w.sklid, w.weight, 0 FROM wanted w WHERE w.sklid IS NOT NULL AND w.weight > 0 AND w.sklid IN (SELECT id FROM master_skill); UPDATE master_skillgacha SET id = 'LID_STEW_NORMAL', odds_id = 'LID_STEW_NORMAL' WHERE id IN ('SKLGACH_NORMAL_OFFLINE', 'SKLGACH_RANDOM_NORMAL', 'SKLGACH_RANDOM_NORMAL_REPEATS', 'LID_STEW_NORMAL');"
+    },
+    {
+      "type": "raw_sql",
+      "id": "pity-button",
+      "description": "The Pity decal button in Check Lineup and the pity line in the stew menu, in every language",
+      "sql": "INSERT OR REPLACE INTO master_text (sct, id, snd, lang, txt, type) VALUES ('MSHR_KAIKAN', 'TXT_LID_PITY', '', 'int', 'Pity decal', 4), ('MSHR_KAIKAN', 'TXT_LID_PITY', '', 'esn', 'Garantizada', 4), ('MSHR_KAIKAN', 'TXT_LID_PITY', '', 'deu', 'Garantiert', 4), ('MSHR_KAIKAN', 'TXT_LID_PITY', '', 'fra', 'Garantie', 4), ('MSHR_KAIKAN', 'TXT_LID_PITY', '', 'ita', 'Garantita', 4), ('MSHR_KAIKAN', 'TXT_LID_PITY', '', 'ptb', 'Garantida', 4), ('MSHR_KAIKAN', 'TXT_LID_PITY', '', 'jpn', '天井', 4), ('MSHR_KAIKAN', 'TXT_LID_PITY', '', 'chn', '保底', 4), ('MSHR_KAIKAN', 'TXT_LID_PITY', '', 'kan', '保底', 4), ('MSHR_KAIKAN', 'TXT_LID_PITY', '', 'kor', '천장', 4), ('MSHR_KAIKAN', 'TXT_LID_PITY_LEFT', '', 'int', 'Pity #0/#1: #2', 4), ('MSHR_KAIKAN', 'TXT_LID_PITY_LEFT', '', 'esn', 'Garantizada #0/#1: #2', 4), ('MSHR_KAIKAN', 'TXT_LID_PITY_LEFT', '', 'deu', 'Garantiert #0/#1: #2', 4), ('MSHR_KAIKAN', 'TXT_LID_PITY_LEFT', '', 'fra', 'Garantie #0/#1 : #2', 4), ('MSHR_KAIKAN', 'TXT_LID_PITY_LEFT', '', 'ita', 'Garantita #0/#1: #2', 4), ('MSHR_KAIKAN', 'TXT_LID_PITY_LEFT', '', 'ptb', 'Garantida #0/#1: #2', 4), ('MSHR_KAIKAN', 'TXT_LID_PITY_LEFT', '', 'jpn', '天井 #0/#1：#2', 4), ('MSHR_KAIKAN', 'TXT_LID_PITY_LEFT', '', 'chn', '保底 #0/#1：#2', 4), ('MSHR_KAIKAN', 'TXT_LID_PITY_LEFT', '', 'kan', '保底 #0/#1：#2', 4), ('MSHR_KAIKAN', 'TXT_LID_PITY_LEFT', '', 'kor', '천장 #0/#1: #2', 4), ('MSHR_KAIKAN', 'TXT_LID_PITY_NONE', '', 'int', 'Pity: pick a decal in #0', 4), ('MSHR_KAIKAN', 'TXT_LID_PITY_NONE', '', 'esn', 'Garantizada: elige una en #0', 4), ('MSHR_KAIKAN', 'TXT_LID_PITY_NONE', '', 'deu', 'Garantiert: wähle einen in #0', 4), ('MSHR_KAIKAN', 'TXT_LID_PITY_NONE', '', 'fra', 'Garantie : choisis-en une dans #0', 4), ('MSHR_KAIKAN', 'TXT_LID_PITY_NONE', '', 'ita', 'Garantita: scegline una in #0', 4), ('MSHR_KAIKAN', 'TXT_LID_PITY_NONE', '', 'ptb', 'Garantida: escolha uma em #0', 4), ('MSHR_KAIKAN', 'TXT_LID_PITY_NONE', '', 'jpn', '天井：#0で選択', 4), ('MSHR_KAIKAN', 'TXT_LID_PITY_NONE', '', 'chn', '保底：於#0中選擇', 4), ('MSHR_KAIKAN', 'TXT_LID_PITY_NONE', '', 'kan', '保底：在#0中选择', 4), ('MSHR_KAIKAN', 'TXT_LID_PITY_NONE', '', 'kor', '천장: #0에서 선택', 4);"
+    },
+    {
+      "type": "raw_sql",
+      "id": "pity-regular",
+      "when": {"pity_regular": true},
+      "description": "Pity in the regular stew: your picked decal after {{pity_regular_pulls}} pulls without it",
+      "sql": "INSERT OR REPLACE INTO master_const_int (id, value) VALUES ('LID_PITY_NORMAL', {{pity_regular_pulls}});"
+    },
+    {
+      "type": "raw_sql",
+      "id": "pity-dm",
+      "when": {"pity_dm": true},
+      "description": "Pity in the Death Metal stew: your picked decal after {{pity_dm_pulls}} pulls without it",
+      "sql": "INSERT OR REPLACE INTO master_const_int (id, value) VALUES ('LID_PITY_DM', {{pity_dm_pulls}});"
+    },
+    {
+      "type": "raw_sql",
+      "id": "pity-fest",
+      "when": {"pity_fest": true},
+      "description": "Pity in the Super Stew Festival: your picked decal after {{pity_fest_pulls}} pulls without it",
+      "sql": "INSERT OR REPLACE INTO master_const_int (id, value) VALUES ('LID_PITY_FEST', {{pity_fest_pulls}});"
     }
   ]
 }

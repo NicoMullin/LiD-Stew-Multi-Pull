@@ -22,14 +22,24 @@
  *    whose odds list (master_skillgacha.odds_id) starts with SKLGACH_RANDOM_
  *    gets a fresh pick from its own list, weighted by the odds, every pull,
  *    using the game's own masters.db query and memory functions - and in a
- *    multi pull, no decal twice. Every other stew is passed to the game's draw
- *    unchanged, and the queue in the save is not touched. (Used by the Death
- *    Metals mod's Death Metal stew and the Events and Seasons festival stew.)
+ *    multi pull, no decal twice, unless the list's name ends in _REPEATS.
+ *    Every other stew is passed to the game's draw unchanged, and the queue in
+ *    the save is not touched. (Used by the Death Metals mod's Death Metal
+ *    stew, the Events and Seasons festival stew, and the Stew Multi Pull mod's
+ *    "a fresh random pick" for the regular stew.)
  *
  * 3. Every stew offered. The offline server lists only the first stew in
  *    masters.db that is not a box stew. Where it adds that one and stops, it
  *    goes on to the next instead, so every stew is offered. The list is
  *    written to the log on each visit to the shop.
+ *
+ * 4. Pity. After a number of pulls of a stew without the decal the player
+ *    picked for it (in the stew's Check Lineup, sent along with the next
+ *    pull), the next pull gives that decal. Each stew counts on its own, the
+ *    number of pulls is set by the Stew Multi Pull mod, and the picks and
+ *    counts are kept in the player's save. The shop's reply and every pull's
+ *    reply also tell the mod's menu how far each stew's pity is, so it can
+ *    show it.
  *
  * These were part of lid-deathmetals.dll up to 0.5.x; they moved here so the
  * multi pull does not need the Death Metals mod.
@@ -303,6 +313,27 @@ static const char SHOPLIST_MASK[] = "xxxxxxxx????xxxxxxxxxx";
 #define SHOPLIST_CALL 7
 #define SHOP_STEW_SIZE 0x20     /* FBrgDbGacha: the stew id first */
 
+/* The box stews' list, filled by the same function for the shop's reply and
+ * for every pull's reply (the menu reads it after either):
+ *   lea rcx,[r13+0x5f8] / xor edx,edx / call fill_boxes / mov [rsp+0x38],rbx
+ *   lea rcx,[r13+0x5d8] / mov dl,1 / call fill_boxes / mov rax,[r14] /
+ *   mov rdx,r13 / mov rcx,r14 / call [rax+0x30] */
+static const unsigned char BOXES_SHOP_PATTERN[] = {
+    0x49, 0x8D, 0x8D, 0xF8, 0x05, 0x00, 0x00, 0x33, 0xD2, 0xE8, 0x00, 0x00, 0x00, 0x00,
+    0x48, 0x89, 0x5C, 0x24, 0x38,
+};
+static const char BOXES_SHOP_MASK[] = "xxxxxxxxxx????xxxxx";
+static const unsigned char BOXES_PULL_PATTERN[] = {
+    0x49, 0x8D, 0x8D, 0xD8, 0x05, 0x00, 0x00, 0xB2, 0x01, 0xE8, 0x00, 0x00, 0x00, 0x00,
+    0x49, 0x8B, 0x06, 0x49, 0x8B, 0xD5, 0x49, 0x8B, 0xCE, 0xFF, 0x50, 0x30,
+};
+static const char BOXES_PULL_MASK[] = "xxxxxxxxxx????xxxxxxxxxxxx";
+#define BOXES_CALL 9
+#define BOX_SIZE 0x24           /* FBrgDbUserBoxGacha: the stew id, its decals, resets */
+#define BOX_DECALS 0x10
+#define BOX_DECAL_SIZE 0x14     /* FBrgDbUserBoxGachaContent: the decal id, how many left */
+#define BOX_DECAL_REST 0x10
+
 /* Which stews the shop offers (getCurrentSkillGachaId): it walks the stews in
  * masters.db, skips box stews, adds the first other one and stops - the offline
  * game offers one normal stew at most.
@@ -366,13 +397,52 @@ static const char DRAWN_MASK[] = "xxxxxxxxxxxxx????xxxxxxxxxxxxxx????xxx";
 #define DRAWN_CALL 30
 #define DRAW_ALL_REACH 0x400    /* the normal draw call lies this close after draw_all's start */
 
+/* The server's reader of master_const_int, found where it reads the Rewards
+ * Box's limit:
+ *   lea rdx,[rsp+0x30] / lea rcx,[L"PRESENT_BOX_LIMIT"] / xor ebx,ebx /
+ *   call const_int / test al,al / jnz */
+static const unsigned char CONSTINT_PATTERN[] = {
+    0x48, 0x8D, 0x54, 0x24, 0x30, 0x48, 0x8D, 0x0D, 0x00, 0x00, 0x00, 0x00, 0x33, 0xDB,
+    0xE8, 0x00, 0x00, 0x00, 0x00, 0x84, 0xC0, 0x75, 0x2B,
+};
+static const char CONSTINT_MASK[] = "xxxxxxxx????xxx????xxxx";
+#define CONSTINT_NAME 8
+#define CONSTINT_CALL 14
+/* const_int(name, &value): push rbx / sub rsp,0x60 / mov qword [rsp+0x20],-2 /
+ * mov rbx,rdx / mov r8,rcx */
+static const unsigned char CONSTINT_BODY[] = {
+    0x40, 0x53, 0x48, 0x83, 0xEC, 0x60, 0x48, 0xC7, 0x44, 0x24, 0x20, 0xFE, 0xFF, 0xFF, 0xFF,
+    0x48, 0x8B, 0xDA, 0x4C, 0x8B, 0xC1,
+};
+
+/* The player's user record ("user" in the save), where the save is read:
+ *   test rax,rax / je / mov rdx,rax / lea rcx,[user record] / call read_user
+ * read_user: sub rsp,0x28 / xor r8d,r8d / call / mov al,1 / add rsp,0x28 / ret */
+static const unsigned char USERLOAD_PATTERN[] = {
+    0x48, 0x85, 0xC0, 0x74, 0x14, 0x48, 0x8B, 0xD0, 0x48, 0x8D, 0x0D, 0x00, 0x00, 0x00, 0x00, 0xE8,
+};
+static const char USERLOAD_MASK[] = "xxxxxxxxxxx????x";
+#define USERLOAD_REC 11
+#define USERLOAD_CALL 15
+static const unsigned char READ_USER_BODY[] = {
+    0x48, 0x83, 0xEC, 0x28, 0x45, 0x33, 0xC0, 0xE8, 0x00, 0x00, 0x00, 0x00, 0xB0, 0x01,
+    0x48, 0x83, 0xC4, 0x28, 0xC3,
+};
+static const char READ_USER_MASK[] = "xxxxxxxx????xxxxxxx";
+/* The record is the payment's user plus 8; its "olid", an online-era text the
+ * offline game only ever loads and saves, is an FString at +0x34. */
+#define USER_RECORD_IN_PAY 8
+#define USER_OLID 0x34
+
 /* A row of the odds list: the decal id (an FString) and its odds. */
 #define ODDS_ROW_SIZE  0x3C
 #define ODDS_ROW_SKLID 0x18
 #define ODDS_ROW_ODDS  0x28
 #define ODDS_ROWS_GET  (0x10 / 8)
-/* Stews whose odds list is named like this are drawn fresh every pull. */
+/* Stews whose odds list is named like this are drawn fresh every pull; one
+ * whose name also ends like REPEATS_SUFFIX may give a decal twice in a run. */
 #define RANDOM_STEW_PREFIX L"SKLGACH_RANDOM_"
+#define REPEATS_SUFFIX L"_REPEATS"
 
 
 struct pieces {
@@ -387,11 +457,51 @@ struct pieces {
     void *pull_ids_check;
     unsigned char *pay, *drawn;                 /* the pull's payment and draw calls */
     void *pay_one, *purchase, *draw_all;
+    void *pay_user;                             /* the payment's user */
+    void *const_int;                            /* the server's master_const_int reader */
+    unsigned char *user_record;                 /* "user" in the save */
+    unsigned char *boxes_shop, *boxes_pull;     /* the replies' box stew list calls */
+    void *fill_boxes;
 };
 
 static int inside(struct span s, const unsigned char *p, size_t n)
 {
     return p >= s.start && p + n <= s.start + s.size;
+}
+
+static struct span g_image;     /* the whole exe, for reading what code points at */
+
+/* What the pity needs: the server's master_const_int reader, and the user
+ * record the save is read into - which must be the payment's user plus 8. */
+static void find_pity(struct span text, struct pieces *pc)
+{
+    unsigned char *site = NULL, *name, *fn, *rec, *reader;
+    size_t i, n = sizeof USERLOAD_PATTERN;
+    int hits = 0;
+
+    if (find_all(text, CONSTINT_PATTERN, CONSTINT_MASK, &site) == 1) {
+        name = rel_target(site + CONSTINT_NAME, site + CONSTINT_NAME + 4);
+        fn = rel_target(site + CONSTINT_CALL + 1, site + CONSTINT_CALL + 5);
+        if (inside(g_image, name, 36) && is_wstr(name, L"PRESENT_BOX_LIMIT") &&
+            inside(text, fn, sizeof CONSTINT_BODY) && memcmp(fn, CONSTINT_BODY, sizeof CONSTINT_BODY) == 0)
+            pc->const_int = fn;
+    }
+    if (!pc->pay_user)
+        return;
+    for (i = 0; i + n + 4 <= text.size; i++) {
+        site = text.start + i;
+        if (site[0] != USERLOAD_PATTERN[0] || !matches(site, USERLOAD_PATTERN, USERLOAD_MASK))
+            continue;
+        rec = rel_target(site + USERLOAD_REC, site + USERLOAD_REC + 4);
+        reader = rel_target(site + USERLOAD_CALL + 1, site + USERLOAD_CALL + 5);
+        if (rec == (unsigned char *)pc->pay_user + USER_RECORD_IN_PAY &&
+            inside(text, reader, sizeof READ_USER_BODY) && matches(reader, READ_USER_BODY, READ_USER_MASK)) {
+            pc->user_record = rec;
+            hits++;
+        }
+    }
+    if (hits != 1)
+        pc->user_record = NULL;
 }
 
 /* The stew pull's draw call and the game functions the random draw uses: all
@@ -409,6 +519,15 @@ static void find_stew(struct span text, struct pieces *pc)
         pc->stew_ids_add = rel_target(site + STEWIDS_CALL + 1, site + STEWIDS_CALL + 5);
         pc->stew_ids_loop = site + STEWIDS_JMP + 2 + (signed char)site[STEWIDS_JMP + 1];
     }
+    if (find_all(text, BOXES_SHOP_PATTERN, BOXES_SHOP_MASK, &site) == 1 &&
+        find_all(text, BOXES_PULL_PATTERN, BOXES_PULL_MASK, &boxsite) == 1) {
+        unsigned char *fill = rel_target(site + BOXES_CALL + 1, site + BOXES_CALL + 5);
+        if (fill == rel_target(boxsite + BOXES_CALL + 1, boxsite + BOXES_CALL + 5) && inside(text, fill, 1)) {
+            pc->boxes_shop = site + BOXES_CALL;
+            pc->boxes_pull = boxsite + BOXES_CALL;
+            pc->fill_boxes = fill;
+        }
+    }
     if (find_all(text, PULLIDS_PATTERN, PULLIDS_MASK, &site) == 1) {
         pc->pull_ids = site + PULLIDS_CALL;
         pc->pull_ids_check = rel_target(site + PULLIDS_CALL + 1, site + PULLIDS_CALL + 5);
@@ -419,8 +538,10 @@ static void find_stew(struct span text, struct pieces *pc)
             pc->pay = site + PAY_CALL;
             pc->pay_one = one;
             pc->purchase = rel_target(one + PAY_ONE_CALL + 1, one + PAY_ONE_CALL + 5);
+            pc->pay_user = rel_target(site + 18, site + 22);
         }
     }
+    find_pity(text, pc);
     if (find_all(text, DRAWN_PATTERN, DRAWN_MASK, &site) == 1) {
         pc->drawn = site + DRAWN_CALL;
         pc->draw_all = rel_target(site + DRAWN_CALL + 1, site + DRAWN_CALL + 5);
@@ -460,6 +581,8 @@ static void find_pieces(unsigned char *base, struct pieces *pc)
     memset(pc, 0, sizeof *pc);
     if (!section(base, ".text", &text))
         return;
+    g_image.start = base;
+    g_image.size = ((IMAGE_NT_HEADERS64 *)(base + ((IMAGE_DOS_HEADER *)base)->e_lfanew))->OptionalHeader.SizeOfImage;
     find_stew(text, pc);
 }
 
@@ -498,6 +621,14 @@ static int is_random_stew(const wchar_t *odds_id)
     return odds_id && wcsncmp(odds_id, RANDOM_STEW_PREFIX, n) == 0;
 }
 
+/* A random stew whose odds list ends in _REPEATS may give a decal twice in one
+ * multi pull, as single pulls can. */
+static int repeats_allowed(const wchar_t *odds_id)
+{
+    size_t n = wcslen(odds_id), m = wcslen(REPEATS_SUFFIX);
+    return n >= m && wcscmp(odds_id + n - m, REPEATS_SUFFIX) == 0;
+}
+
 /* The multi pull in progress: how many pulls were left at the last one (0:
  * none), and the decals it has given so far. g_all: this request asks for its
  * whole run at once (0: no); g_draw_n: that many were paid for, to draw. */
@@ -525,6 +656,283 @@ static int drawable(const unsigned char *row, struct fstring *id, int fresh)
     return fresh && given_this_run(id->data) ? 0 : odds;
 }
 
+/* ------------------------------------------------------------ the pity */
+
+/* After a number of pulls of a stew without the decal the player picked for
+ * it (in the stew's Check Lineup), the next pull gives that decal. Each stew
+ * counts on its own: the regular stew (whichever of its forms the Stew Multi
+ * Pull mod set up), the Death Metals mod's Death Metal stew and the Events and
+ * Seasons festival stew. How many pulls is master_const_int LID_PITY_*, set by
+ * the mod; none, or 0, and that stew has no pity.
+ *
+ * The picks and the counts are kept in the player's save, in the user
+ * record's "olid" - a text the online game used and the offline one only
+ * ever loads and saves - so each save has its own, and the save is written
+ * after every pull anyway. A save whose olid holds anything else is left
+ * alone, and has no pity. */
+#define PITY_HINT L"LID_PITY="          /* <stew id>|<decal id>: the pick */
+#define PITY_MARK L"LIDPITY"
+#define PITY_GROUPS 3
+#define PITY_MAX 1000
+#define DECAL_ID_MAX 64
+
+static const struct { const wchar_t *stew; int group; } PITY_STEWS[] = {
+    {L"SKLGACH_NORMAL_OFFLINE", 0}, {L"LID_STEW_NORMAL", 0},
+    {L"SKLGACH_RANDOM_NORMAL", 0}, {L"SKLGACH_RANDOM_NORMAL_REPEATS", 0},
+    {L"SKLGACH_RANDOM_DM", 1}, {L"SKLGACH_RANDOM_FEST", 2},
+};
+static const wchar_t *const PITY_KEY[PITY_GROUPS] = {L"N", L"DM", L"FEST"};
+static const wchar_t *const PITY_LIMIT[PITY_GROUPS] = {L"LID_PITY_NORMAL", L"LID_PITY_DM", L"LID_PITY_FEST"};
+
+struct pity { wchar_t decal[DECAL_ID_MAX]; int count; };
+
+static int pity_group(const wchar_t *stew)
+{
+    size_t i;
+    for (i = 0; stew && i < sizeof PITY_STEWS / sizeof PITY_STEWS[0]; i++)
+        if (wcscmp(stew, PITY_STEWS[i].stew) == 0)
+            return PITY_STEWS[i].group;
+    return -1;
+}
+
+typedef char (*const_int_fn)(const wchar_t *name, int *value);
+
+/* How many pulls before the picked decal comes, for a stew group: 0 = none. */
+static int pity_limit(int group)
+{
+    int value = 0;
+    if (!g_pc.const_int || !((const_int_fn)g_pc.const_int)(PITY_LIMIT[group], &value) || value <= 0)
+        return 0;
+    return value > PITY_MAX ? PITY_MAX : value;
+}
+
+static struct fstring *pity_text(void)
+{
+    return g_pc.user_record ? (struct fstring *)(g_pc.user_record + USER_OLID) : NULL;
+}
+
+/* The save's picks and counts. 0 when the save's olid is not ours to use. */
+static int pity_load(struct pity st[PITY_GROUPS])
+{
+    struct fstring s;
+    const wchar_t *p;
+    int g;
+
+    memset(st, 0, sizeof(struct pity) * PITY_GROUPS);
+    if (!pity_text())
+        return 0;
+    memcpy(&s, pity_text(), sizeof s);
+    if (!s.data || s.num <= 1 || !s.data[0])
+        return 1;
+    if (s.num > 2048 || wcsncmp(s.data, PITY_MARK, wcslen(PITY_MARK)) != 0)
+        return 0;
+    /* LIDPITY;N=SKL_X,37;DM=SKL_Y,5 */
+    for (p = wcschr(s.data, L';'); p; p = wcschr(p + 1, L';')) {
+        const wchar_t *eq = wcschr(p, L'='), *comma, *end;
+        if (!eq)
+            break;
+        comma = wcschr(eq, L',');
+        end = wcschr(p + 1, L';');
+        if (!comma || (end && comma > end))
+            continue;
+        for (g = 0; g < PITY_GROUPS; g++) {
+            size_t k = wcslen(PITY_KEY[g]);
+            if ((size_t)(eq - p - 1) == k && wcsncmp(p + 1, PITY_KEY[g], k) == 0 &&
+                comma - eq - 1 > 0 && comma - eq - 1 < DECAL_ID_MAX) {
+                wcsncpy(st[g].decal, eq + 1, (size_t)(comma - eq - 1));
+                st[g].decal[comma - eq - 1] = 0;
+                st[g].count = _wtoi(comma + 1);
+                if (st[g].count < 0 || st[g].count > PITY_MAX)
+                    st[g].count = 0;
+            }
+        }
+    }
+    return 1;
+}
+
+static void pity_store(const struct pity st[PITY_GROUPS])
+{
+    wchar_t text[512];
+    struct fstring s, *field = pity_text();
+    int g, n = 0, used = 0;
+    DWORD bytes;
+
+    if (!field)
+        return;
+    n = swprintf(text, 512, L"%ls", PITY_MARK);
+    for (g = 0; g < PITY_GROUPS; g++) {
+        if (!st[g].decal[0])
+            continue;
+        n += swprintf(text + n, 512 - n, L";%ls=%ls,%d", PITY_KEY[g], st[g].decal, st[g].count);
+        used++;
+    }
+    if (!used)
+        text[0] = 0, n = 0;
+    memcpy(&s, field, sizeof s);
+    bytes = (DWORD)(n + 1) * sizeof(wchar_t);
+    if (!n) {
+        if (s.data)
+            s.data[0] = 0;
+        s.num = s.data ? 1 : 0;
+    } else {
+        if (!s.data || s.max < n + 1) {
+            wchar_t *grown = ((realloc_fn)g_pc.game_realloc)(s.data, bytes, 8);
+            if (!grown) {
+                log_line("pity: out of memory - the counts were not kept");
+                return;
+            }
+            s.data = grown;
+            s.max = n + 1;
+        }
+        memcpy(s.data, text, bytes);
+        s.num = n + 1;
+    }
+    memcpy(field, &s, sizeof s);
+}
+
+/* The decal a pull gives, once drawn: counted towards its stew's pity, and
+ * the picked decal given instead when the pulls are up. The count starts
+ * again whenever the picked decal comes, either way. */
+static void pity_after_draw(const wchar_t *stew, struct fstring *out)
+{
+    struct pity st[PITY_GROUPS];
+    int group = pity_group(stew), limit;
+    size_t n;
+
+    if (group < 0 || !out || !(limit = pity_limit(group)) || !pity_load(st) || !st[group].decal[0])
+        return;
+    if (out->data && wcscmp(out->data, st[group].decal) == 0) {
+        st[group].count = 0;
+    } else if (++st[group].count >= limit) {
+        n = wcslen(st[group].decal) + 1;
+        if (!out->data || out->max < (int)n) {
+            wchar_t *grown = ((realloc_fn)g_pc.game_realloc)(out->data, (DWORD)(n * sizeof(wchar_t)), 8);
+            if (!grown) {
+                log_line("pity: out of memory - %ls not given", st[group].decal);
+                return;
+            }
+            out->data = grown;
+            out->max = (int)n;
+        }
+        log_line("pity: %d pulls of %ls without %ls - given it instead of %ls", limit, stew,
+                 st[group].decal, out->num > 1 ? out->data : L"nothing");
+        memcpy(out->data, st[group].decal, n * sizeof(wchar_t));
+        out->num = (int)n;
+        st[group].count = 0;
+    }
+    pity_store(st);
+}
+
+/* A pick from the stew's Check Lineup, sent along with the next pull. The
+ * count carries on: whichever decal is picked, it comes after the same number
+ * of pulls, so changing your mind late costs nothing. */
+static void pity_pick(const wchar_t *hint)
+{
+    struct pity st[PITY_GROUPS];
+    wchar_t stew[64];
+    const wchar_t *bar = wcschr(hint, L'|');
+    int group;
+    size_t n;
+
+    if (!bar || bar - hint <= 0 || bar - hint >= 64)
+        return;
+    wcsncpy(stew, hint, (size_t)(bar - hint));
+    stew[bar - hint] = 0;
+    group = pity_group(stew);
+    n = wcslen(bar + 1);
+    if (group < 0 || n == 0 || n >= DECAL_ID_MAX || wcschr(bar + 1, L';') || wcschr(bar + 1, L','))
+        return;
+    if (!pity_load(st)) {
+        log_line("pity: this save's olid already holds something else - no pity for it");
+        return;
+    }
+    if (wcscmp(st[group].decal, bar + 1) != 0) {
+        wcscpy(st[group].decal, bar + 1);
+        log_line("pity: %ls's picked decal is now %ls (%d pulls counted)", stew, st[group].decal,
+                 st[group].count);
+    }
+    pity_store(st);
+}
+
+/* A text the game owns, in the game's memory: 0 when out of memory. */
+static int game_text(struct fstring *s, const wchar_t *text)
+{
+    int n = (int)wcslen(text) + 1;
+
+    memset(s, 0, sizeof *s);
+    if (n == 1)
+        return 1;
+    s->data = ((realloc_fn)g_pc.game_realloc)(NULL, (DWORD)(n * sizeof(wchar_t)), 8);
+    if (!s->data)
+        return 0;
+    memcpy(s->data, text, n * sizeof(wchar_t));
+    s->num = s->max = n;
+    return 1;
+}
+
+/* How far each stew's pity is, for the Stew Multi Pull mod's menu to show: an
+ * entry on the end of the reply's box stew list for every stew that has pity,
+ * named PITY_ENTRY + the stew's id, holding two decals - the picked one (none
+ * yet: an empty id) with the pulls counted so far, then an empty one with the
+ * pulls it takes. No box stew is named like that, so the menu's box stew code
+ * never finds them, and the save's own box stews are not touched. */
+#define PITY_ENTRY L"LID_PITY_"
+
+static void pity_show(struct rows *boxes)
+{
+    struct pity st[PITY_GROUPS];
+    int limit[PITY_GROUPS], g, want = 0;
+    size_t i;
+    unsigned char *grown;
+
+    if (!g_pc.game_realloc || !pity_load(st))
+        return;
+    for (g = 0; g < PITY_GROUPS; g++)
+        limit[g] = pity_limit(g);
+    for (i = 0; i < sizeof PITY_STEWS / sizeof PITY_STEWS[0]; i++)
+        want += limit[PITY_STEWS[i].group] > 0;
+    if (!want)
+        return;
+    grown = ((realloc_fn)g_pc.game_realloc)(boxes->data, (DWORD)((boxes->num + want) * BOX_SIZE), 8);
+    if (!grown)
+        return;
+    boxes->data = grown;
+    boxes->max = boxes->num + want;
+    for (i = 0; i < sizeof PITY_STEWS / sizeof PITY_STEWS[0]; i++) {
+        unsigned char *entry = boxes->data + (size_t)boxes->num * BOX_SIZE, *decals;
+        struct rows *list = (struct rows *)(entry + BOX_DECALS);
+        wchar_t id[96];
+
+        g = PITY_STEWS[i].group;
+        if (limit[g] <= 0)
+            continue;
+        memset(entry, 0, BOX_SIZE);
+        swprintf(id, 96, L"%ls%ls", PITY_ENTRY, PITY_STEWS[i].stew);
+        decals = ((realloc_fn)g_pc.game_realloc)(NULL, 2 * BOX_DECAL_SIZE, 8);
+        if (!decals || !game_text((struct fstring *)entry, id))
+            return;
+        memset(decals, 0, 2 * BOX_DECAL_SIZE);
+        if (!game_text((struct fstring *)decals, st[g].decal))
+            return;
+        *(int *)(decals + BOX_DECAL_REST) = st[g].count;
+        *(int *)(decals + BOX_DECAL_SIZE + BOX_DECAL_REST) = limit[g];
+        list->data = decals;
+        list->num = list->max = 2;
+        boxes->num++;
+    }
+}
+
+typedef uint64_t (*fill_boxes_fn)(struct rows *boxes, char flag);
+
+/* In place of the call that fills a reply's box stew list: filled as before,
+ * then the pity entries go on the end. */
+uint64_t lid_sp_boxes(struct rows *boxes, char flag)
+{
+    uint64_t ok = ((fill_boxes_fn)g_pc.fill_boxes)(boxes, flag);
+    pity_show(boxes);
+    return ok;
+}
+
 typedef char (*ids_check_fn)(struct rows *ids);
 
 /* From the stew pull's check of its list of stews, before anything is paid
@@ -532,7 +940,7 @@ typedef char (*ids_check_fn)(struct rows *ids);
  * count that is not lower than the last one (a new multi pull), starts afresh. */
 char lid_sp_pull_ids(struct rows *ids)
 {
-    size_t n = wcslen(MULTI_HINT), m = wcslen(ALL_HINT);
+    size_t n = wcslen(MULTI_HINT), m = wcslen(ALL_HINT), p = wcslen(PITY_HINT);
     struct fstring s;
     int i, left = 0, all = 0;
 
@@ -542,6 +950,8 @@ char lid_sp_pull_ids(struct rows *ids)
             left = _wtoi(s.data + n);
         else if (s.data && s.num > (int)m && wcsncmp(s.data, ALL_HINT, m) == 0)
             all = _wtoi(s.data + m);
+        else if (s.data && s.num > (int)p && wcsncmp(s.data, PITY_HINT, p) == 0)
+            pity_pick(s.data + p);
     }
     if (left <= 0 || g_run_left <= 0 || left >= g_run_left)
         g_run_n = 0;
@@ -590,18 +1000,22 @@ void *lid_sp_draw_all(void *decals, void *stew, int count)
  * queue every normal stew shares, kept in the save): a stew whose odds list is
  * named SKLGACH_RANDOM_* gets a fresh pick from its own list, weighted by the
  * odds, every pull - in a multi pull, not one it gave already, until every
- * decal on the list has come once. Every other stew goes to the game's draw
- * unchanged. */
+ * decal on the list has come once (a list named ..._REPEATS: any of them, every
+ * pull). Every other stew goes to the game's draw unchanged. */
 void *lid_sp_draw(struct fstring *out, const wchar_t *odds_id)
 {
     struct rows rows = {0};
     struct fstring id;
     void *query;
     long long total = 0, roll;
-    int i, odds, fresh = g_run_left > 0;
+    int i, odds, fresh;
 
-    if (!is_random_stew(odds_id))
-        return ((draw_fn)g_pc.normal_draw)(out, odds_id);
+    if (!is_random_stew(odds_id)) {
+        void *drawn = ((draw_fn)g_pc.normal_draw)(out, odds_id);
+        pity_after_draw(odds_id, out);
+        return drawn;
+    }
+    fresh = g_run_left > 0 && !repeats_allowed(odds_id);
 
     out->data = NULL;
     out->num = out->max = 0;
@@ -636,6 +1050,7 @@ void *lid_sp_draw(struct fstring *out, const wchar_t *odds_id)
     if (out->data) {
         memcpy(out->data, id.data, (size_t)id.num * sizeof(wchar_t));
         out->num = out->max = id.num;
+        pity_after_draw(odds_id, out);
         if (g_run_left > 0 && g_run_n < RUN_MAX && wcslen(out->data) < 64)
             wcscpy(g_run_ids[g_run_n++], out->data);
         if (g_run_left > 0)
@@ -749,6 +1164,29 @@ static void patch_stew(unsigned char *base)
     } else {
         log_line("stew: the stew pull's payment or draw not found exactly once - multi pulls go one "
                  "pull at a time. A game update may have moved them.");
+    }
+
+    if (g_pc.stew_ok && g_pc.pull_ids && g_pc.const_int && g_pc.user_record)
+        log_line("pity: on - after LID_PITY_NORMAL / _DM / _FEST pulls without the decal picked in a "
+                 "stew's Check Lineup, the next pull gives it (game+0x%llX, user +0x%llX)",
+                 (unsigned long long)((unsigned char *)g_pc.const_int - base),
+                 (unsigned long long)(g_pc.user_record - base));
+    else
+        log_line("pity: the settings reader or the save's user record not found exactly once - no pity. "
+                 "A game update may have moved them.");
+
+    /* how far each stew's pity is, in the replies the stew menu reads */
+    if (g_pc.stew_ok && g_pc.const_int && g_pc.user_record && g_pc.fill_boxes) {
+        put64(s + 2, (void *)lid_sp_boxes);
+        stub = emit(s, 12);
+        if (stub && branch_to(g_pc.boxes_shop, 5, 0xE8, stub) && branch_to(g_pc.boxes_pull, 5, 0xE8, stub))
+            log_line("pity: the stew menu is told how far each stew's pity is (game+0x%llX, game+0x%llX)",
+                     (unsigned long long)(g_pc.boxes_shop - base), (unsigned long long)(g_pc.boxes_pull - base));
+        else
+            log_line("pity: could not change the stew replies - the menu shows no pity count");
+    } else if (g_pc.stew_ok && g_pc.const_int && g_pc.user_record) {
+        log_line("pity: the stew replies' box stew list not found exactly once - the menu shows no pity "
+                 "count. A game update may have moved it.");
     }
 
     /* the shop's list of stews, logged on each visit */

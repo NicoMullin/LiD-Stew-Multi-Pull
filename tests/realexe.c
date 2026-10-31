@@ -49,6 +49,11 @@ int main(int argc, char **argv)
     show("  the purchase", base, pc.purchase, 0x1326200);
     show("pull's draw into the reply", base, pc.drawn, 0x1164b46);
     show("  the draw of n", base, pc.draw_all, 0x13cc2a0);
+    show("settings reader", base, pc.const_int, 0);
+    show("save's user record", base, pc.user_record, 0);
+    show("shop reply's box stews", base, pc.boxes_shop, 0);
+    show("pull reply's box stews", base, pc.boxes_pull, 0);
+    show("  filled by", base, pc.fill_boxes, 0);
     printf("\nrandom stews can be switched on: %s\n", pc.stew_ok ? "yes" : "NO");
     if (!pc.stew_ok) fails++;
     printf(fails ? "\n%d FAILED\n" : "\nall found\n", fails);

@@ -95,6 +95,13 @@ def export(path: str) -> int:
     return hits[0]
 
 
+def imported(path: str) -> int:
+    hits = [-(i + 1) for i in range(len(pkg.imports)) if pkg.full_path(-(i + 1)) == path]
+    if len(hits) != 1:
+        sys.exit(f"{path}: {len(hits)} imports - is this BrgGame.upk?")
+    return hits[0]
+
+
 CLS = "BrgUIMenu_SkillExchange"
 RS = export(f"{CLS}.mReturnState")
 TEMPSTATE = export(f"{CLS}.Tick.tempState")
@@ -130,6 +137,25 @@ GRID_ROWS = 3                   # rows shown; online used 2, the layout has guid
 GRID_RAISE = 12                 # the grid sits this much higher than online's
 LEFT_HINT = "LID_MULTI_LEFT="   # read by lid-stewpull.dll: pulls left in a run
 ALL_HINT = "LID_MULTI_ALL="     # and: do the whole run in this one request
+PITY_HINT = "LID_PITY="         # and: <stew id>|<decal id>, the pity decal picked
+PITY_TEXT = "MSHR_KAIKAN.TXT_LID_PITY"   # the button guide's "Pity decal", a text the mod adds
+PITY_LEFT = "MSHR_KAIKAN.TXT_LID_PITY_LEFT"   # "Pity #0/#1: #2" (pulls, pulls it takes, decal), too
+PITY_NONE = "MSHR_KAIKAN.TXT_LID_PITY_NONE"   # "Pity: pick a decal in #0" (Check Lineup), too
+PITY_ENTRY = "LID_PITY_"        # lid-stewpull.dll's box stew entry for a stew's pity: + the stew id
+STATE_LINEUP = 24               # a stew's Check Lineup: its decals in the game's decal list
+TRIANGLE = 128                  # mEdgeInput's bit for Triangle (Y), which that list never reads
+ICON_TRIANGLE = 3               # EGamePadIcon_Y
+RESULT_ID = export(f"{CLS}.mGachaResultSkillId")
+SKILL_LIST = export(f"{CLS}.mSelectSkillList")
+LIST = f"{CLS}_SkillList"
+LIST_CURSOR = export(f"{LIST}.mCursorPos")
+LIST_SHOWN = export(f"{LIST}.mSkillListDetailFiltered")
+LIST_DETAIL = export(f"{LIST}.{CLS}_SkillListSkillDetail")
+LIST_DETAIL_ID = export(f"{LIST}.{CLS}_SkillListSkillDetail.SkillID")
+GACHA_PROP = export(f"{CLS}.mCurrentGachaProperty")
+PROP = export(f"{CLS}.SkillExchange_GachaProperty")
+PROP_ID = export(f"{CLS}.SkillExchange_GachaProperty.mGachaid")
+GUIDE_TYPE = export(f"{CLS}.SetButtonGuide.inGuideType")
 
 o = lambda ref: struct.pack("<i", ref)      # noqa: E731
 u16 = lambda v: struct.pack("<H", v)         # noqa: E731
@@ -173,6 +199,10 @@ def fconst(v): return b"\x1e" + struct.pack("<f", v)
 def cstr(text): return b"\x1f" + text.encode("latin-1") + b"\0"
 def inc(e): return native(0xA5, e)                      # e++
 def cond(c, a, b): return b"\x45" + c + u16(mem_len(a)) + a + u16(mem_len(b)) + b
+def left(s, n): return native(0x80, s, intb(n))         # Left(s, n)
+def str_eq(a, b): return native(0x7A, a, b)
+def str_ne(a, b): return native(0x7B, a, b)
+def read_member(field, struct_ref, of): return b"\x35" + o(field) + o(struct_ref) + b"\x00\x00" + of
 ZERO, ONE, TRUE = b"\x25", b"\x26", b"\x27"
 rs = inst(RS)
 count = to_int(rs)
@@ -568,16 +598,162 @@ def build(N: int) -> bytes:
     def add_id(text):
         return ids + u16(mem_len(text) + 1) + text + b"\x16"
 
+    # A pity decal picked in Check Lineup (below) waits in mGachaResultSkillId
+    # as LID_PITY=<stew>|<decal>, and goes with the next pull the same way.
+    picked = inst(RESULT_ID)
+    is_pick = str_eq(left(picked, len(PITY_HINT)), cstr(PITY_HINT))
     send = net.stmt_bytes(0x9D, "L:NetGacha.gachaRes = interfacecontext(")
     net.stmt(0xE7, "return L:NetGacha.gachaRes")
     net.divert(0x9D, "L:NetGacha.gachaRes =", Asm()
-               .jumpifnot("send", gt(count, ZERO))
+               .jumpifnot("pity", gt(count, ZERO))
                .code(add_id(concat(cstr(LEFT_HINT), to_string(count))))
-               .jumpifnot("send", eq(count, intb(N)))
+               .jumpifnot("pity", eq(count, intb(N)))
                .code(add_id(concat(cstr(ALL_HINT), to_string(count))))
+               .label("pity")
+               .jumpifnot("send", is_pick)
+               .code(add_id(picked))
+               .code(let(picked, cstr("")))
                .label("send")
                .code(send)
                .jump(0xE7))
+
+    # ------------------------------------------------------------ the pity pick
+    # Check Lineup (state 24) shows the stew's decals in the game's decal list,
+    # which never reads Triangle. Triangle on a decal makes it the stew's pity
+    # decal: LID_PITY=<stew id>|<decal id> waits in mGachaResultSkillId - set
+    # by the result card and cleared when it closes, so free between pulls -
+    # until NetGacha sends it. lid-stewpull.dll keeps it in the save.
+    the_list = inst(SKILL_LIST)
+    cursor = context(the_list, LIST_CURSOR, inst(LIST_CURSOR))
+    shown = context(the_list, LIST_SHOWN, inst(LIST_SHOWN))
+    decal = read_member(LIST_DETAIL_ID, LIST_DETAIL, element(cursor, shown))
+    stew_id = read_member(PROP_ID, PROP, inst(GACHA_PROP))
+    lookup = tick.stmt_bytes(0x2FDD, "L:Tick.gachaIndex = I:mNowGachas.find(")
+    if stew_id not in lookup:
+        sys.exit("Tick: the current stew's id is not read as expected")
+    confirm = tick.stmt_bytes(0x1B92, "jumpifnot 0x1c7a (N155(N156(I:BrgUIBase.mUIManager.")[3:]
+    if confirm.count(intb(16)) != 1:
+        sys.exit("Tick: the menu's button check is not as expected")
+    triangle = confirm.replace(intb(16), intb(TRIANGLE))
+    result = tick.stmt_bytes(0x30D2, "L:Tick.selectSkillResult = I:mSelectSkillList.")
+    back = tick.after(0x30D2, "L:Tick.selectSkillResult = ")
+    tick.divert(0x30D2, "L:Tick.selectSkillResult = ", Asm()
+                .jumpifnot("result", triangle)
+                .jumpifnot("result", ge(cursor, ZERO))
+                .jumpifnot("result", lt(cursor, b"\x36" + shown))
+                .code(let(picked, concat(concat(concat(cstr(PITY_HINT), stew_id), cstr("|")), decal)))
+                .code(sound_ok)
+                .label("result")
+                .code(result)
+                .jump(back))
+
+    # the button guide in Check Lineup: Triangle, "Pity decal"
+    guide = Fn(f"{CLS}.SetButtonGuide", (24, 940, 672))
+    icon = guide.stmt_bytes(0xB7, "(L:SetButtonGuide.lButtonInfo).BrgUIMenuPart_ButtonGuide.BrgUIButtonGuideUnitBaseInfo.mIcon[0,1] = 19b")
+    name = guide.stmt_bytes(0xD6, "(L:SetButtonGuide.lButtonInfo).BrgUIMenuPart_ButtonGuide.BrgUIButtonGuideUnitBaseInfo.mName[0,1] = ")
+    add_button = guide.stmt_bytes(0x130, "L:SetButtonGuide.lButtonInfoArray.additem(")
+    show_guide = guide.stmt_bytes(0x36C, "I:BrgUIBase.mUIManager.{skip=0x9,BrgUIManager.mMenuButtonGuide,0}")
+    old_key = b"\x1fMENU_GLOBAL.TXT_SELECT\x00"
+    new_key = b"\x1f" + PITY_TEXT.encode("latin-1") + b"\x00"
+    at = name.index(b"\x12\x20") + 6
+    if name.count(old_key) != 1 or not icon.endswith(b"\x24\x13"):
+        sys.exit("SetButtonGuide: the Select entry is not as expected")
+    (skip,) = struct.unpack_from("<H", name, at)
+    name = name[:at] + u16(skip + len(new_key) - len(old_key)) + name[at + 2:]
+    name = name.replace(old_key, new_key)
+    back = guide.after(0x36C, "I:BrgUIBase.mUIManager.")
+    guide.divert(0x36C, "I:BrgUIBase.mUIManager.", Asm()
+                 .jumpifnot("show", eq(to_int(local(GUIDE_TYPE)), intb(3)))
+                 .jumpifnot("show", eq(to_int(inst(MENU_STATE)), intb(STATE_LINEUP)))
+                 .code(icon[:-1] + bytes([ICON_TRIANGLE]) + name + add_button)
+                 .label("show")
+                 .code(show_guide)
+                 .jump(back))
+
+    # ------------------------------------------------------------- the pity count
+    # The line box stews use for "Remaining 3/10" shows the stew's pity:
+    # "Pity 37/100: <decal>", or how to pick one. lid-stewpull.dll puts an
+    # entry on the end of the box stews' list (mNowBoxgachas, which the shop's
+    # reply and every pull's reply fill) for each stew that has pity: named
+    # LID_PITY_<stew id>, holding two decals - the pick (an empty id: none)
+    # with the pulls counted, then an empty one with the pulls it takes. A
+    # pick still waiting to go with the next pull is shown instead of the
+    # saved one. Without the plugin there is no entry, and nothing shows.
+    box_line = menu.stmt_bytes(0x3B2, "jumpifnot 0x4ff (bool((I:mCurrentGachaProperty).SkillExchange_GachaProperty.mIsBOXGacha")
+    left_line = menu.stmt_bytes(0x3D2, "I:BrgUIBase.mUIManager.{skip=0x9,BrgUIManager.mFontRender,0}")
+    if left_line.count(b"\x1fMSHR_KAIKAN.TXT_GACHA_LEFT\x00") != 1 or left_line[26] != 0x1B:
+        sys.exit("RenderGachaMenu: the box stew's Remaining line is not as expected")
+    d = Dis(left_line[35:], names, objs)
+    d.expr()                                            # the font
+    d.expr()                                            # where: the number's guide
+    at_text = 35 + d.pos
+    d.expr()                                            # the text
+    at_rest = 35 + d.pos
+
+    def draw_line(text):
+        call = left_line[26:at_text] + text + left_line[at_rest:]
+        return left_line[:19] + u16(mem_len(call)) + left_line[21:26] + call
+
+    if draw_line(left_line[at_text:at_rest]) != left_line:
+        sys.exit("RenderGachaMenu: could not rebuild the Remaining line")
+    find = split_let(tick.stmt_bytes(0x2B93, "L:Tick.gachaIndex = I:mNowBoxgachas.find("))[1]
+    d = Dis(find, names, objs)
+    d.u8()
+    d.expr()                                            # mNowBoxgachas
+    at_skip = d.pos
+    d.pos += 2
+    d.expr()                                            # 'mGacha_id'
+    at_value = d.pos
+    if find[0] != 0x47 or find[at_value:-1] != stew_id or \
+            struct.unpack_from("<H", find, at_skip)[0] != mem_len(find[at_skip + 2:]):
+        sys.exit("Tick: the box stew lookup is not as expected")
+
+    def find_box(value):
+        rest = find[at_skip + 2:at_value] + value + b"\x16"
+        return find[:at_skip] + u16(mem_len(rest)) + rest
+
+    util, name_ret = export("BrgUI_Utility"), export("BrgUI_Utility.GetSkillNameLocalizeText.ReturnValue")
+    name_fn = [i for i, n in enumerate(pkg.names) if n.text == "GetSkillNameLocalizeText"]
+    get_text = [i for i, n in enumerate(pkg.names) if n.text == "GetText"]
+    if len(name_fn) != 1 or len(get_text) != 1:
+        sys.exit("BrgUI_Utility's GetText or GetSkillNameLocalizeText not found")
+
+    def utility(fn_name: int, ret: int, *params: bytes) -> bytes:
+        """BrgUI_Utility.<fn>(params), a static call the way the game's compiler writes it."""
+        call = b"\x1b" + struct.pack("<ii", fn_name, 0) + b"".join(params) + b"\x16"
+        return b"\x12\x20" + o(util) + u16(mem_len(call)) + o(ret) + b"\x00" + call
+
+    top_menu = pkg.export_data(export(f"{CLS}.PrepareTopMenu") - 1)
+    if utility(get_text[0], export("BrgUI_Utility.GetText.ReturnValue"),
+               cstr("MSHR_KAIKAN.TXT_BUY"), b"\x4a" * 4) not in top_menu:
+        sys.exit("could not rebuild the game's own BrgUI_Utility.GetText call")
+    box_list = inst(export(f"{CLS}.mNowBoxgachas"))
+    box_index = local(export(f"{CLS}.RenderGachaMenu.I"))
+    box_struct = imported("BrgGameBase.BrgNetworkDeclStruct.BrgDbUserBoxGacha")
+    box_decals = imported("BrgGameBase.BrgNetworkDeclStruct.BrgDbUserBoxGacha.mContents")
+    decal_struct = imported("BrgGameBase.BrgNetworkDeclStruct.BrgDbUserBoxGachaContent")
+    decal_id = imported("BrgGameBase.BrgNetworkDeclStruct.BrgDbUserBoxGachaContent.mSkill_id")
+    decal_rest = imported("BrgGameBase.BrgNetworkDeclStruct.BrgDbUserBoxGachaContent.mRest")
+    entry_decals = read_member(box_decals, box_struct, element(box_index, box_list))
+    pulls = read_member(decal_rest, decal_struct, element(ZERO, entry_decals))
+    limit = read_member(decal_rest, decal_struct, element(ONE, entry_decals))
+    saved = read_member(decal_id, decal_struct, element(ZERO, entry_decals))
+    waiting = concat(concat(cstr(PITY_HINT), stew_id), cstr("|"))
+    is_waiting = str_eq(native(0x80, picked, native(0x7D, waiting)), waiting)    # Left(p, Len(w)) == w
+    waiting_decal = native(0xEA, picked, minus(native(0x7D, picked), native(0x7D, waiting)))   # Right
+    shown = cond(is_waiting, waiting_decal, saved)
+    pity_line = cond(str_eq(shown, cstr("")),
+                     localize(PITY_NONE, localize("MSHR_KAIKAN.TXT_GACHA_LINEUP")),
+                     localize(PITY_LEFT, to_string(pulls), to_string(limit),
+                              utility(name_fn[0], name_ret, shown)))
+    menu.divert(0x3B2, "jumpifnot 0x4ff", Asm()
+                .jumpifnot("pity", box_line[3:])
+                .jump(0x3D2)                        # a box stew: Remaining, as before
+                .label("pity")
+                .code(let(box_index, find_box(concat(cstr(PITY_ENTRY), stew_id))))
+                .jumpifnot(0x4FF, ge(box_index, ZERO))
+                .code(draw_line(pity_line))
+                .jump(0x4FF))
 
     # ------------------------------------------------------------------ the grid
     # BrgUIMenu_SkillExchange_BoxGachaLineup.DrawList draws mListH rows from the
@@ -629,7 +805,15 @@ def build(N: int) -> bytes:
                   .label("done")
                   .jump(back))
 
-    functions = [top, tick, check, menu, net, render, draw]
+    # and draws the result card's decal whenever mGachaResultSkillId is not
+    # empty; a waiting pity pick is not a decal
+    render_card = render.stmt_bytes(0x148, "jumpifnot 0x336 (N123(I:mGachaResultSkillId, ''))")
+    render.divert(0x148, "jumpifnot 0x336", Asm()
+                  .jumpifnot(0x336, render_card[3:])
+                  .jumpifnot(0x336, str_ne(left(picked, len(PITY_HINT)), cstr(PITY_HINT)))
+                  .jump(render.after(0x148, "jumpifnot 0x336")))
+
+    functions = [top, tick, check, menu, net, render, draw, guide]
     for fn in functions:
         fn.finish()
 
